@@ -1,0 +1,266 @@
+name: Deploy Stack
+
+on:
+  workflow_call:
+    inputs:
+      # GitHub Environment (ci, devl, test, prod)
+      environment:
+        description: "GitHub environment name for accessing environment-scoped variables. Must be one of: ci, devl, test, prod."
+        required: false
+        type: string
+        default: "ci"
+
+      # Concurrency group name (optional - allows caller to customize)
+      concurrency-group:
+        description: "Concurrency group name for workflow runs"
+        required: false
+        type: string
+        default: ""
+
+      # AWS Configuration
+      aws-region:
+        description: "AWS region for CloudFormation deployment"
+        required: true
+        type: string
+
+      aws-account-id:
+        description: "AWS account ID for OIDC role assumption"
+        required: true
+        type: string
+
+      oidc-role-name:
+        description: "IAM role name for OIDC authentication"
+        required: true
+        type: string
+
+      # S3 Configuration for CloudFormation Templates
+      cfn-templates-s3-bucket:
+        description: "S3 bucket name for storing CloudFormation templates"
+        required: true
+        type: string
+
+      # Stack Configuration
+      stack-name:
+        description: "CloudFormation stack name"
+        required: false
+        type: string
+        default: ""
+
+      # Parameters Configuration
+      parameters-file:
+        description: "Path to CloudFormation parameters file"
+        required: false
+        type: string
+        default: "infra/parameters.json"
+
+      template-file:
+        description: "Path to CloudFormation template file"
+        required: false
+        type: string
+        default: "infra/template.yaml"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ inputs.concurrency-group || format('cfn-deploy-{0}-{1}', inputs.environment, github.ref) }}
+  cancel-in-progress: true
+
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
+jobs:
+  environment-check:
+    name: Environment Check
+    runs-on: ubuntu-latest
+    outputs:
+      ci-prefix: ${{ steps.ci-prefix.outputs.prefix }}
+    steps:
+      - name: Validate Environment
+        id: validate-env
+        shell: bash
+        run: |
+          # Validate environment input
+          if [[ "${{ inputs.environment }}" != "ci" && "${{ inputs.environment }}" != "devl" && "${{ inputs.environment }}" != "test" && "${{ inputs.environment }}" != "prod" ]]; then
+            echo "Error: Invalid environment '${{ inputs.environment }}'. Must be one of: ci, devl, test, prod"
+            exit 1
+          fi
+          echo "✅ Valid environment: ${{ inputs.environment }}"
+
+      - name: Generate CI Prefix
+        id: ci-prefix
+        shell: bash
+        run: |
+          if [[ "${{ inputs.environment }}" == "ci" ]]; then
+            CI_PREFIX=$(openssl rand -hex 2 | tr -d '\n')
+            echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
+            echo "✅ Generated CI prefix: ${CI_PREFIX}"
+          else
+            echo "prefix=" >> $GITHUB_OUTPUT
+            echo "ℹ️  Skipping CI prefix generation (environment: ${{ inputs.environment }})"
+          fi
+
+  validate:
+    name: Validate CloudFormation Template
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Verify AWS Credentials
+        run: |
+          echo "✅ Successfully configured AWS credentials"
+          aws sts get-caller-identity
+
+      - name: Extract Template Directory and Filename
+        id: template-paths
+        shell: bash
+        run: |
+          TEMPLATE_FILE="${{ inputs.template-file }}"
+          TEMPLATE_DIR=$(dirname "$TEMPLATE_FILE")
+          TEMPLATE_FILENAME=$(basename "$TEMPLATE_FILE")
+          echo "directory=$TEMPLATE_DIR" >> $GITHUB_OUTPUT
+          echo "filename=$TEMPLATE_FILENAME" >> $GITHUB_OUTPUT
+
+      - name: Validate CloudFormation Templates
+        uses: subhamay-bhattacharyya-gha/cfn-validate-action@main
+        with:
+          aws-role-arn: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
+          cloudformation-dir: ${{ steps.template-paths.outputs.directory }}
+          template-file: ${{ steps.template-paths.outputs.filename }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Run CloudFormation Lint
+        uses: subhamay-bhattacharyya-gha/cfn-lint-action@v1.0.0
+        with:
+          template-path: ${{ inputs.template-file }}
+
+  upload-to-s3:
+    name: Upload Template to S3
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    needs: validate
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      template_url: ${{ steps.upload.outputs.template_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Upload template to S3 and set output
+        id: upload
+        run: |
+          TEMPLATE_FILENAME=$(basename "${{ inputs.template-file }}")
+          TEMPLATE_KEY="${{ github.event.repository.name }}/${TEMPLATE_FILENAME}"
+          echo "Uploading template to S3..."
+          aws s3 cp ${{ inputs.template-file }} "s3://${{ inputs.cfn-templates-s3-bucket }}/${TEMPLATE_KEY}" --region ${{ inputs.aws-region }}
+
+          TEMPLATE_URL="https://${{ inputs.cfn-templates-s3-bucket }}.s3.${{ inputs.aws-region }}.amazonaws.com/${TEMPLATE_KEY}"
+          echo "template_url=${TEMPLATE_URL}" >> $GITHUB_OUTPUT
+          echo "Template URL: ${TEMPLATE_URL}"
+          echo "✅ Template uploaded to S3"
+
+  deploy:
+    name: Deploy Stack
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    needs:
+      - environment-check
+      - upload-to-s3
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Prepare CloudFormation Parameters with CiPrefix
+        id: prepare-params
+        shell: bash
+        run: |
+          CI_PREFIX="${{ needs.environment-check.outputs.ci-prefix }}"
+          PARAMS_FILE="${{ inputs.parameters-file }}"
+
+          if [[ -f "$PARAMS_FILE" ]]; then
+            PARAMS=$(cat "$PARAMS_FILE")
+          else
+            PARAMS="{}"
+          fi
+
+          if [[ -n "$CI_PREFIX" ]]; then
+            PARAMS=$(echo "$PARAMS" | jq --arg prefix "$CI_PREFIX" '.CiPrefix = $prefix')
+            echo "✅ Added CiPrefix parameter: $CI_PREFIX"
+          else
+            echo "ℹ️  Skipping CiPrefix parameter (not in CI environment)"
+          fi
+
+          echo "$PARAMS" | jq . > infra/parameters-updated.json
+          echo "parameters_file=infra/parameters-updated.json" >> $GITHUB_OUTPUT
+
+      - name: Display Input Parameters Summary
+        shell: bash
+        run: |
+          {
+            echo "## 🚀 CloudFormation Deployment Parameters"
+            echo ""
+            echo "### Workflow Inputs"
+            echo "| Parameter | Value |"
+            echo "|-----------|-------|"
+            echo "| Environment | ${{ inputs.environment }} |"
+            echo "| AWS Region | ${{ inputs.aws-region }} |"
+            echo "| AWS Account ID | ${{ inputs.aws-account-id }} |"
+            echo "| OIDC Role Name | ${{ inputs.oidc-role-name }} |"
+            echo "| CFN Templates S3 Bucket | ${{ inputs.cfn-templates-s3-bucket }} |"
+            echo "| Stack Name | ${{ inputs.stack-name != '' && inputs.stack-name || 'default (repository name)' }} |"
+            echo "| Template File | ${{ inputs.template-file }} |"
+            echo "| Parameters File | ${{ inputs.parameters-file }} |"
+            echo "| Concurrency Group | ${{ inputs.concurrency-group != '' && inputs.concurrency-group || 'default (auto-generated)' }} |"
+            echo ""
+            echo "### Computed Values"
+            echo "| Parameter | Value |"
+            echo "|-----------|-------|"
+            echo "| CI Prefix | ${{ needs.environment-check.outputs.ci-prefix != '' && needs.environment-check.outputs.ci-prefix || 'N/A (not in CI)' }} |"
+            echo "| Final Stack Name | ${{ needs.environment-check.outputs.ci-prefix != '' && format('{0}-{1}', needs.environment-check.outputs.ci-prefix, inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) || (inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) }} |"
+            echo "| Template URL | ${{ needs.upload-to-s3.outputs.template_url }} |"
+            echo "| Parameters File | infra/parameters-updated.json |"
+            echo ""
+            echo "### CloudFormation Parameters"
+            echo "| Parameter Name | Value |"
+            echo "|---|---|"
+            cat infra/parameters-updated.json | jq -r 'to_entries[] | "| \(.key) | \(.value) |"'
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Deploy CloudFormation Stack
+        uses: subhamay-bhattacharyya-gha/cfn-deploy-action@v1.0.0
+        with:
+          stack-name: ${{ needs.environment-check.outputs.ci-prefix != '' && format('{0}-{1}', needs.environment-check.outputs.ci-prefix, inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) || (inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) }}
+          region: ${{ inputs.aws-region }}
+          template-url: ${{ needs.upload-to-s3.outputs.template_url }}
+          parameters-file: ${{ steps.prepare-params.outputs.parameters_file }}
+          aws-account-id: ${{ inputs.aws-account-id }}
+          oidc-role-name: ${{ inputs.oidc-role-name }}
