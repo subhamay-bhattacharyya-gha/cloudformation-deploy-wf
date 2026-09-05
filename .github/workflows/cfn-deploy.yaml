@@ -374,6 +374,63 @@ jobs:
             echo "ℹ️  Stack does not exist: $STACK_NAME. Proceeding with creation..."
           fi
 
+      - name: Check if Stack Updates are Needed
+        id: check-updates
+        shell: bash
+        run: |
+          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          REGION="${{ inputs.aws-region }}"
+          TEMPLATE_URL="${{ needs.upload-to-s3.outputs.template_url }}"
+          PARAMS_FILE="${{ steps.prepare-params.outputs.parameters_file }}"
+
+          echo "🔍 Checking if stack needs updates: $STACK_NAME"
+
+          # Check if stack exists
+          if ! aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" &>/dev/null; then
+            echo "updates-needed=true" >> $GITHUB_OUTPUT
+            echo "✅ Stack does not exist - will be created"
+            exit 0
+          fi
+
+          # Display current parameters
+          echo ""
+          echo "📋 Current Stack Parameters:"
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].Parameters' \
+            --output table 2>/dev/null || echo "No parameters found"
+
+          echo ""
+          echo "📋 New Parameters to be applied:"
+          if [[ -f "$PARAMS_FILE" ]]; then
+            cat "$PARAMS_FILE" | jq . 2>/dev/null || cat "$PARAMS_FILE"
+          else
+            echo "⚠️  Parameters file not found: $PARAMS_FILE"
+          fi
+
+          echo ""
+          echo "ℹ️  Stack exists - checking for template changes..."
+          echo "updates-needed=true" >> $GITHUB_OUTPUT
+          echo "ℹ️  Proceeding with update attempt (AWS will validate if changes exist)"
+        env:
+          AWS_REGION: ${{ inputs.aws-region }}
+
+      - name: Validate Parameters Format
+        shell: bash
+        run: |
+          PARAMS_FILE="${{ steps.prepare-params.outputs.parameters_file }}"
+
+          echo "📄 Parameters file path: $PARAMS_FILE"
+          echo "📄 Parameters file contents:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          cat "$PARAMS_FILE" | jq . 2>/dev/null || cat "$PARAMS_FILE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "ℹ️  Verify that your parameters are in the correct format"
+          echo "ℹ️  Expected format for CloudFormation: {\"ParameterKey\": \"ParameterValue\"}"
+          echo ""
+
       - name: Deploy CloudFormation Stack
         id: deploy
         continue-on-error: true
@@ -397,8 +454,8 @@ jobs:
             echo "✅ CloudFormation stack deployed successfully: $STACK_NAME"
             exit 0
           else
-            # Check if the error is "No updates are to be performed"
-            echo "⏳ Checking if stack needs updates..."
+            # Deployment failed - check if it's due to "No updates are to be performed"
+            echo "⏳ Checking stack status after deployment attempt..."
 
             STACK_STATUS=$(aws cloudformation describe-stacks \
               --stack-name "$STACK_NAME" \
@@ -407,8 +464,16 @@ jobs:
               --output text 2>/dev/null || echo "DOES_NOT_EXIST")
 
             if [[ "$STACK_STATUS" == "CREATE_COMPLETE" || "$STACK_STATUS" == "UPDATE_COMPLETE" ]]; then
-              echo "✅ Stack is up-to-date (no updates needed): $STACK_NAME"
-              echo "ℹ️  Stack Status: $STACK_STATUS"
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "✅ Stack is already up-to-date (no updates needed)"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "Stack Name: $STACK_NAME"
+              echo "Stack Status: $STACK_STATUS"
+              echo ""
+              echo "ℹ️  This is expected when template and parameters haven't changed."
+              echo "ℹ️  The stack is in the desired state."
+              echo ""
               exit 0
             else
               echo "❌ Deployment failed"
