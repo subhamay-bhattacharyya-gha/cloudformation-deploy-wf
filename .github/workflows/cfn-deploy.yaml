@@ -22,6 +22,7 @@ on:
         description: "AWS region for CloudFormation deployment"
         required: true
         type: string
+        default: "us-east-1"
 
       aws-account-id:
         description: "AWS account ID for OIDC role assumption"
