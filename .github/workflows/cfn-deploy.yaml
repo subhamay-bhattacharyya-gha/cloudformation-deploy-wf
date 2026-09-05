@@ -91,11 +91,21 @@ jobs:
           echo "✅ Valid environment: ${{ inputs.environment }}"
 
       - name: Download Previous Artifacts
+        id: download-artifact
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: cfn-deploy-params
           path: .artifacts
+
+      - name: Check Artifact Download
+        shell: bash
+        run: |
+          if [[ "${{ steps.download-artifact.outcome }}" == "success" && -f ".artifacts/infra/parameters-updated.json" ]]; then
+            echo "✅ Successfully downloaded previous artifact"
+          else
+            echo "ℹ️  No previous artifact found or download failed (expected on first run)"
+          fi
 
       - name: Generate CI Prefix
         id: ci-prefix
@@ -151,10 +161,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v6.2.4
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
           aws-region: ${{ inputs.aws-region }}
@@ -199,10 +209,10 @@ jobs:
       template_url: ${{ steps.upload.outputs.template_url }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v6.2.4
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
           aws-region: ${{ inputs.aws-region }}
@@ -232,10 +242,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v6.2.4
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
           aws-region: ${{ inputs.aws-region }}
@@ -314,7 +324,7 @@ jobs:
 
       - name: Upload Parameters as Artifact (for failure recovery)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: cfn-deploy-params
           path: ${{ steps.prepare-params.outputs.parameters_file }}
@@ -353,6 +363,21 @@ jobs:
 
       - name: Delete Artifact on Successful Deployment
         if: success()
-        uses: geekyeggo/delete-artifact@v2
-        with:
-          name: cfn-deploy-params
+        shell: bash
+        run: |
+          ARTIFACT_NAME="cfn-deploy-params"
+
+          # Try to delete the artifact using GitHub API
+          # If artifact doesn't exist, it will fail silently
+          gh run download ${{ github.run_id }} --name "$ARTIFACT_NAME" -D /tmp/check 2>/dev/null && {
+            echo "✅ Artifact exists, deleting..."
+            gh api \
+              repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts \
+              --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .id" | \
+              xargs -I {} gh api -X DELETE repos/${{ github.repository }}/actions/artifacts/{} && \
+              echo "✅ Successfully deleted artifact: $ARTIFACT_NAME"
+          } || {
+            echo "ℹ️  Artifact does not exist or already deleted: $ARTIFACT_NAME"
+          }
+        env:
+          GH_TOKEN: ${{ github.token }}
