@@ -77,6 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ci-prefix: ${{ steps.ci-prefix.outputs.prefix }}
+      stack-name: ${{ steps.prepare-stack-name.outputs.stack-name }}
     steps:
       - name: Validate Environment
         id: validate-env
@@ -89,18 +90,57 @@ jobs:
           fi
           echo "✅ Valid environment: ${{ inputs.environment }}"
 
+      - name: Download Previous Artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: cfn-deploy-params
+          path: .artifacts
+
       - name: Generate CI Prefix
         id: ci-prefix
         shell: bash
         run: |
           if [[ "${{ inputs.environment }}" == "ci" ]]; then
-            CI_PREFIX=$(openssl rand -hex 2 | tr -d '\n')
-            echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
-            echo "✅ Generated CI prefix: ${CI_PREFIX}"
+            # Try to read existing CI_PREFIX from artifact
+            if [[ -f ".artifacts/cfn-params.json" ]]; then
+              CI_PREFIX=$(jq -r '.CiPrefix // empty' .artifacts/cfn-params.json 2>/dev/null)
+              if [[ -n "$CI_PREFIX" ]]; then
+                echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
+                echo "✅ Reused existing CI prefix from artifact: ${CI_PREFIX}"
+              else
+                CI_PREFIX=$(openssl rand -hex 2 | tr -d '\n')
+                echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
+                echo "✅ Generated new CI prefix: ${CI_PREFIX}"
+              fi
+            else
+              CI_PREFIX=$(openssl rand -hex 2 | tr -d '\n')
+              echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
+              echo "✅ Generated new CI prefix: ${CI_PREFIX}"
+            fi
           else
             echo "prefix=" >> $GITHUB_OUTPUT
             echo "ℹ️  Skipping CI prefix generation (environment: ${{ inputs.environment }})"
           fi
+
+      - name: Prepare Stack Name
+        id: prepare-stack-name
+        shell: bash
+        run: |
+          CI_PREFIX="${{ steps.ci-prefix.outputs.prefix }}"
+          STACK_NAME="${{ inputs.stack-name }}"
+          if [[ -z "$STACK_NAME" ]]; then
+            STACK_NAME="${{ github.event.repository.name }}"
+          fi
+
+          if [[ -n "$CI_PREFIX" ]]; then
+            FINAL_STACK_NAME="${STACK_NAME}-${CI_PREFIX}"
+          else
+            FINAL_STACK_NAME="${STACK_NAME}"
+          fi
+
+          echo "stack-name=${FINAL_STACK_NAME}" >> $GITHUB_OUTPUT
+          echo "✅ Final stack name: ${FINAL_STACK_NAME}"
 
   validate:
     name: Validate CloudFormation Template
@@ -204,12 +244,28 @@ jobs:
         id: prepare-params
         shell: bash
         run: |
+          set -e
           CI_PREFIX="${{ needs.environment-check.outputs.ci-prefix }}"
           PARAMS_FILE="${{ inputs.parameters-file }}"
 
           if [[ -f "$PARAMS_FILE" ]]; then
+            echo "Reading parameters from: $PARAMS_FILE"
             PARAMS=$(cat "$PARAMS_FILE")
           else
+            echo "⚠️  Parameters file not found: $PARAMS_FILE. Using empty object."
+            PARAMS="{}"
+          fi
+
+          # Validate JSON is parseable
+          if ! echo "$PARAMS" | jq empty 2>/dev/null; then
+            echo "❌ Error: Invalid JSON in parameters file"
+            exit 1
+          fi
+
+          # Convert to object if it's an array
+          PARAMS_TYPE=$(echo "$PARAMS" | jq -r 'type')
+          if [[ "$PARAMS_TYPE" == "array" ]]; then
+            echo "⚠️  Parameters file contains an array. Converting to object..."
             PARAMS="{}"
           fi
 
@@ -246,7 +302,7 @@ jobs:
             echo "| Parameter | Value |"
             echo "|-----------|-------|"
             echo "| CI Prefix | ${{ needs.environment-check.outputs.ci-prefix != '' && needs.environment-check.outputs.ci-prefix || 'N/A (not in CI)' }} |"
-            echo "| Final Stack Name | ${{ needs.environment-check.outputs.ci-prefix != '' && format('{0}-{1}', needs.environment-check.outputs.ci-prefix, inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) || (inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) }} |"
+            echo "| Final Stack Name | ${{ needs.environment-check.outputs.stack-name }} |"
             echo "| Template URL | ${{ needs.upload-to-s3.outputs.template_url }} |"
             echo "| Parameters File | infra/parameters-updated.json |"
             echo ""
@@ -256,12 +312,47 @@ jobs:
             cat infra/parameters-updated.json | jq -r 'to_entries[] | "| \(.key) | \(.value) |"'
           } >> $GITHUB_STEP_SUMMARY
 
+      - name: Upload Parameters as Artifact (for failure recovery)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfn-deploy-params
+          path: ${{ steps.prepare-params.outputs.parameters_file }}
+          retention-days: 1
+
+      - name: Delete Existing Stack in CI Environment
+        if: inputs.environment == 'ci'
+        shell: bash
+        run: |
+          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          REGION="${{ inputs.aws-region }}"
+
+          echo "🗑️  Checking if stack exists: $STACK_NAME"
+
+          if aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" 2>/dev/null; then
+            echo "🗑️  Stack exists. Deleting stack: $STACK_NAME"
+            aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION"
+
+            echo "⏳ Waiting for stack deletion to complete..."
+            aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME" --region "$REGION" || true
+            echo "✅ Stack deletion complete"
+          else
+            echo "ℹ️  Stack does not exist: $STACK_NAME. Proceeding with creation..."
+          fi
+
       - name: Deploy CloudFormation Stack
+        id: deploy
         uses: subhamay-bhattacharyya-gha/cfn-deploy-action@v1.0.0
         with:
-          stack-name: ${{ needs.environment-check.outputs.ci-prefix != '' && format('{0}-{1}', needs.environment-check.outputs.ci-prefix, inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) || (inputs.stack-name != '' && inputs.stack-name || github.event.repository.name) }}
+          stack-name: ${{ needs.environment-check.outputs.stack-name }}
           region: ${{ inputs.aws-region }}
           template-url: ${{ needs.upload-to-s3.outputs.template_url }}
           parameters-file: ${{ steps.prepare-params.outputs.parameters_file }}
           aws-account-id: ${{ inputs.aws-account-id }}
           oidc-role-name: ${{ inputs.oidc-role-name }}
+
+      - name: Delete Artifact on Successful Deployment
+        if: success()
+        uses: geekyeggo/delete-artifact@v2
+        with:
+          name: cfn-deploy-params
