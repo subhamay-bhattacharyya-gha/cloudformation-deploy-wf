@@ -376,6 +376,7 @@ jobs:
 
       - name: Deploy CloudFormation Stack
         id: deploy
+        continue-on-error: true
         uses: subhamay-bhattacharyya-gha/cfn-deploy-action@v1.0.0
         with:
           stack-name: ${{ needs.environment-check.outputs.stack-name }}
@@ -384,6 +385,39 @@ jobs:
           parameters-file: ${{ steps.prepare-params.outputs.parameters_file }}
           aws-account-id: ${{ inputs.aws-account-id }}
           oidc-role-name: ${{ inputs.oidc-role-name }}
+
+      - name: Handle Deployment Result
+        shell: bash
+        run: |
+          DEPLOY_STATUS="${{ steps.deploy.outcome }}"
+          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          REGION="${{ inputs.aws-region }}"
+
+          if [[ "$DEPLOY_STATUS" == "success" ]]; then
+            echo "✅ CloudFormation stack deployed successfully: $STACK_NAME"
+            exit 0
+          else
+            # Check if the error is "No updates are to be performed"
+            echo "⏳ Checking if stack needs updates..."
+
+            STACK_STATUS=$(aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --region "$REGION" \
+              --query 'Stacks[0].StackStatus' \
+              --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+            if [[ "$STACK_STATUS" == "CREATE_COMPLETE" || "$STACK_STATUS" == "UPDATE_COMPLETE" ]]; then
+              echo "✅ Stack is up-to-date (no updates needed): $STACK_NAME"
+              echo "ℹ️  Stack Status: $STACK_STATUS"
+              exit 0
+            else
+              echo "❌ Deployment failed"
+              echo "Stack Status: $STACK_STATUS"
+              exit 1
+            fi
+          fi
+        env:
+          AWS_REGION: ${{ inputs.aws-region }}
 
       - name: Delete Artifact on Successful Deployment
         if: success()
