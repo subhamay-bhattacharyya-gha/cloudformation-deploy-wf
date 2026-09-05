@@ -63,6 +63,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  actions: write
 
 concurrency:
   group: ${{ inputs.concurrency-group || format('cfn-deploy-{0}-{1}', inputs.environment, github.ref) }}
@@ -183,7 +184,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -231,7 +232,7 @@ jobs:
       template_url: ${{ steps.upload.outputs.template_url }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -264,7 +265,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -389,17 +390,25 @@ jobs:
         run: |
           ARTIFACT_NAME="cfn-deploy-params"
 
-          # Try to delete the artifact using GitHub API
-          # If artifact doesn't exist, it will fail silently
-          gh run download ${{ github.run_id }} --name "$ARTIFACT_NAME" -D /tmp/check 2>/dev/null && {
-            echo "✅ Artifact exists, deleting..."
-            gh api \
-              repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts \
-              --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .id" | \
-              xargs -I {} gh api -X DELETE repos/${{ github.repository }}/actions/artifacts/{} && \
-              echo "✅ Successfully deleted artifact: $ARTIFACT_NAME"
-          } || {
+          echo "🗑️  Attempting to delete artifact: $ARTIFACT_NAME"
+
+          # Get artifact ID
+          ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts \
+            --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .id" 2>/dev/null)
+
+          if [[ -z "$ARTIFACT_ID" ]]; then
             echo "ℹ️  Artifact does not exist or already deleted: $ARTIFACT_NAME"
-          }
+            exit 0
+          fi
+
+          # Try to delete with better error handling
+          if gh api -X DELETE repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID 2>/dev/null; then
+            echo "✅ Successfully deleted artifact: $ARTIFACT_NAME (ID: $ARTIFACT_ID)"
+          else
+            # If 403 error, log it but don't fail
+            echo "⚠️  Could not delete artifact (may lack permissions): $ARTIFACT_NAME"
+            echo "ℹ️  This is expected if the workflow doesn't have 'actions: write' permission"
+            exit 0
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
