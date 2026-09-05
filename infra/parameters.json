@@ -1,0 +1,6 @@
+[
+  {
+    "ParameterKey": "BucketBaseName",
+    "ParameterValue": "your-bucket-name-here"
+  }
+]

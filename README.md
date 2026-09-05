@@ -1,52 +1,77 @@
-# GitHub Action Template Repository
+# CloudFormation Deploy Workflow
 
-![Built with Copilot](https://img.shields.io/badge/Built_with-Copilot-brightgreen?logo=github)&nbsp;![Release](https://github.com/subhamay-bhattacharyya-gha/github-action-template/actions/workflows/release.yaml/badge.svg)&nbsp;![Commit Activity](https://img.shields.io/github/commit-activity/t/subhamay-bhattacharyya-gha/github-action-template)&nbsp;![Last Commit](https://img.shields.io/github/last-commit/subhamay-bhattacharyya-gha/github-action-template)&nbsp;![Release Date](https://img.shields.io/github/release-date/subhamay-bhattacharyya-gha/github-action-template)&nbsp;![Repo Size](https://img.shields.io/github/repo-size/subhamay-bhattacharyya-gha/github-action-template)&nbsp;![File Count](https://img.shields.io/github/directory-file-count/subhamay-bhattacharyya-gha/github-action-template)&nbsp;![Issues](https://img.shields.io/github/issues/subhamay-bhattacharyya-gha/github-action-template)&nbsp;![Top Language](https://img.shields.io/github/languages/top/subhamay-bhattacharyya-gha/github-action-template)&nbsp;![Custom Endpoint](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/bsubhamay/06e35985280456b113298ed56c626e73/raw/github-action-template.json?)
+![Built with Claude](https://img.shields.io/badge/Built%20with-Claude-ff9800??style=flat)&nbsp;![Release](https://github.com/subhamay-bhattacharyya-gha/cloudformation-deploy-wf/actions/workflows/release.yaml/badge.svg)&nbsp;![Commit Activity](https://img.shields.io/github/commit-activity/t/subhamay-bhattacharyya-gha/cloudformation-deploy-wf)&nbsp;![Last Commit](https://img.shields.io/github/last-commit/subhamay-bhattacharyya-gha/cloudformation-deploy-wf)&nbsp;![Release Date](https://img.shields.io/github/release-date/subhamay-bhattacharyya-gha/cloudformation-deploy-wf)&nbsp;![Repo Size](https://img.shields.io/github/repo-size/subhamay-bhattacharyya-gha/cloudformation-deploy-wf)&nbsp;![File Count](https://img.shields.io/github/directory-file-count/subhamay-bhattacharyya-gha/cloudformation-deploy-wf)&nbsp;![Issues](https://img.shields.io/github/issues/subhamay-bhattacharyya-gha/cloudformation-deploy-wf)&nbsp;![CloudFormation](https://img.shields.io/badge/IaC-CloudFormation-orange?style=flat)&nbsp;![Top Language](https://img.shields.io/github/languages/top/subhamay-bhattacharyya-gha/cloudformation-deploy-wf)&nbsp;![Custom Endpoint](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/bsubhamay/abbe62f55bd98d1fa39302fc416e99cb/raw/cloudformation-deploy-wf.json?)
 
-A Template GitHub Repository to be used to create a composite action.
+A reusable GitHub Actions workflow for deploying CloudFormation stacks with validation, linting, S3 upload, and parameterized deployments.
 
-## Action Name
+## Overview
 
-### Action Description
+This reusable GitHub Actions workflow provides a complete CI/CD pipeline for deploying AWS CloudFormation stacks. It includes:
 
-This GitHub Action provides a reusable composite workflow that sets up Python and interacts with the GitHub API to post a comment on an issue, including a link to a created branch.
+- **CloudFormation Template Validation** - Validates template syntax and structure
+- **CFN Lint** - Runs linting checks on CloudFormation templates
+- **S3 Template Upload** - Uploads templates to a designated S3 bucket
+- **CloudFormation Stack Deployment** - Deploys the stack with parameterized inputs
+- **Environment-based CI Prefix** - Automatically generates unique prefixes for CI environments
+- **Parameter Management** - Supports custom parameter files with automatic CiPrefix injection
+- **AWS OIDC Authentication** - Uses OIDC for secure, keyless AWS authentication
 
 ---
 
 ## Inputs
 
-| Name           | Description         | Required | Default        |
-|----------------|---------------------|----------|----------------|
-| `input-1`      | Input description.  | No       | `default-value`|
-| `input-2`      | Input description.  | No       | `default-value`|
-| `input-3`      | Input description.  | No       | `default-value`|
-| `github-token` | GitHub token. Used for API authentication. | Yes | — |
+| Name | Description | Required | Default |
+| ------ | ------------- | -------- | --------- |
+| `environment` | GitHub environment (ci, devl, test, prod) | No | `ci` |
+| `concurrency-group` | Concurrency group name for workflow runs | No | `auto-generated` |
+| `aws-region` | AWS region for CloudFormation deployment | Yes | — |
+| `aws-account-id` | AWS account ID for OIDC role assumption | Yes | — |
+| `oidc-role-name` | IAM role name for OIDC authentication | Yes | — |
+| `cfn-templates-s3-bucket` | S3 bucket for CloudFormation templates | Yes | — |
+| `stack-name` | CloudFormation stack name | No | `repository-name` |
+| `template-file` | Path to CloudFormation template | No | `infra/template.yaml` |
+| `parameters-file` | Path to CloudFormation parameters file | No | `infra/parameters.json` |
 
 ---
 
 ## Example Usage
 
 ```yaml
-name: Example Workflow
+name: Deploy CloudFormation Stack
 
 on:
-  issues:
-    types: [opened]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - ci
+          - devl
+          - test
+          - prod
 
 jobs:
-  example:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run Custom Action
-        uses: your-org/your-action-repo@v1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          input-1: your-value
-          input-2: another-value
-          input-3: something-else
+  deploy:
+    uses: subhamay-bhattacharyya-gha/cloudformation-deploy-wf/.github/workflows/cfn-deploy.yaml@main
+    with:
+      environment: ${{ github.event.inputs.environment }}
+      aws-region: us-east-1
+      aws-account-id: ${{ secrets.AWS_ACCOUNT_ID }}
+      oidc-role-name: github-actions-role
+      cfn-templates-s3-bucket: my-cfn-templates
+      stack-name: my-application-stack
+      template-file: infra/template.yaml
+      parameters-file: infra/parameters.json
 ```
+
+## Workflow Steps
+
+1. **Environment Check** - Validates environment input and generates CI prefix if needed
+2. **Validate** - Checks CloudFormation template syntax and runs linting
+3. **Upload to S3** - Uploads template to S3 with proper key structure
+4. **Deploy** - Deploys the CloudFormation stack with parameters and CI prefix
 
 ## License
 
