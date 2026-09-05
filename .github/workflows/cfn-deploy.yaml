@@ -282,12 +282,14 @@ jobs:
           CI_PREFIX="${{ needs.environment-check.outputs.ci-prefix }}"
           PARAMS_FILE="${{ inputs.parameters-file }}"
 
+          echo "📋 Preparing CloudFormation parameters..."
+
           if [[ -f "$PARAMS_FILE" ]]; then
             echo "Reading parameters from: $PARAMS_FILE"
             PARAMS=$(cat "$PARAMS_FILE")
           else
-            echo "⚠️  Parameters file not found: $PARAMS_FILE. Using empty object."
-            PARAMS="{}"
+            echo "⚠️  Parameters file not found: $PARAMS_FILE. Using empty array."
+            PARAMS="[]"
           fi
 
           # Validate JSON is parseable
@@ -296,15 +298,19 @@ jobs:
             exit 1
           fi
 
-          # Convert to object if it's an array
+          # Ensure parameters are in array format
           PARAMS_TYPE=$(echo "$PARAMS" | jq -r 'type')
-          if [[ "$PARAMS_TYPE" == "array" ]]; then
-            echo "⚠️  Parameters file contains an array. Converting to object..."
-            PARAMS="{}"
+          if [[ "$PARAMS_TYPE" != "array" ]]; then
+            echo "⚠️  Parameters not in array format. Converting..."
+            PARAMS=$(echo "$PARAMS" | jq '[to_entries[] | {ParameterKey: .key, ParameterValue: .value}]')
           fi
 
+          # Add or update CiPrefix parameter if in CI environment
           if [[ -n "$CI_PREFIX" ]]; then
-            PARAMS=$(echo "$PARAMS" | jq --arg prefix "$CI_PREFIX" '.CiPrefix = $prefix')
+            PARAMS=$(echo "$PARAMS" | jq \
+              --arg key "CiPrefix" \
+              --arg value "$CI_PREFIX" \
+              'map(select(.ParameterKey != $key)) + [{ParameterKey: $key, ParameterValue: $value}]')
             echo "✅ Added CiPrefix parameter: $CI_PREFIX"
           else
             echo "ℹ️  Skipping CiPrefix parameter (not in CI environment)"
