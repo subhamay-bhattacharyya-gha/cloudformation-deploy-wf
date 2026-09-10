@@ -1,3 +1,16 @@
+# [1.1.0](https://github.com/subhamay-bhattacharyya-gha/cloudformation-deploy-wf/compare/v1.0.0...v1.1.0) (2026-09-10)
+
+
+### Bug Fixes
+
+* update badge to reflect correct branding for Claude Code ([41e5fd2](https://github.com/subhamay-bhattacharyya-gha/cloudformation-deploy-wf/commit/41e5fd23e089181910f7ce1a5f71e91647c55c49))
+
+
+### Features
+
+* add step to extract parameters file directory path ([e0e44ae](https://github.com/subhamay-bhattacharyya-gha/cloudformation-deploy-wf/commit/e0e44aecc771b3b09c2ce9fe989a17fe8e1f2a4d))
+* expose parameters-file-path as job output ([5f74a98](https://github.com/subhamay-bhattacharyya-gha/cloudformation-deploy-wf/commit/5f74a98f26c64b04b1fa2c4411246b4ecd1b4ef5))
+
 ## [1.1.2](https://github.com/subhamay-bhattacharyya-gha/cloudformation-deploy-wf/compare/v1.1.1...v1.1.2) (2025-05-21)
 
 
