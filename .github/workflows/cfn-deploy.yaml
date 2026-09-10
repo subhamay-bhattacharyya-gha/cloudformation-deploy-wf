@@ -123,9 +123,10 @@ jobs:
       - name: Check Artifact Download
         shell: bash
         run: |
+          PARAMS_PATH="${{ steps.params-path.outputs.path }}"
           if [[ "${{ steps.check-artifact.outputs.artifact-exists }}" == "false" ]]; then
             echo "ℹ️  Artifact does not exist - skipping download (expected on first run)"
-          elif [[ "${{ steps.download-artifact.outcome }}" == "success" && -f ".artifacts/infra/parameters-updated.json" ]]; then
+          elif [[ "${{ steps.download-artifact.outcome }}" == "success" && -f ".artifacts/${PARAMS_PATH}/parameters-updated.json" ]]; then
             echo "✅ Successfully downloaded previous artifact"
           else
             echo "⚠️  Artifact exists but download failed"
@@ -335,6 +336,8 @@ jobs:
       - name: Display Input Parameters Summary
         shell: bash
         run: |
+          PARAMS_PATH="${{ needs.environment-check.outputs.parameters-file-path }}"
+          PARAMS_FILE="${{ steps.prepare-params.outputs.parameters_file }}"
           {
             echo "## 🚀 CloudFormation Deployment Parameters"
             echo ""
@@ -357,12 +360,12 @@ jobs:
             echo "| CI Suffix | ${{ needs.environment-check.outputs.ci-suffix != '' && needs.environment-check.outputs.ci-suffix || 'N/A (not in CI)' }} |"
             echo "| Final Stack Name | ${{ needs.environment-check.outputs.stack-name }} |"
             echo "| Template URL | ${{ needs.upload-to-s3.outputs.template_url }} |"
-            echo "| Parameters File | infra/parameters-updated.json |"
+            echo "| Parameters File | ${PARAMS_FILE} |"
             echo ""
             echo "### CloudFormation Parameters"
             echo "| Parameter Name | Value |"
             echo "|---|---|"
-            cat infra/parameters-updated.json | jq -r 'to_entries[] | "| \(.key) | \(.value) |"'
+            cat "${PARAMS_FILE}" | jq -r 'to_entries[] | "| \(.key) | \(.value) |"'
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Parameters as Artifact (for failure recovery)
