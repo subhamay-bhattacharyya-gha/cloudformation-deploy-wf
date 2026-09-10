@@ -73,9 +73,14 @@ env:
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
-  environment-check:
-    name: Environment Check
+  validate:
+    name: Validate CloudFormation Template
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+      actions: write
     outputs:
       ci-suffix: ${{ steps.ci-suffix.outputs.suffix }}
       stack-name: ${{ steps.prepare-stack-name.outputs.stack-name }}
@@ -120,6 +125,15 @@ jobs:
           name: cfn-deploy-params
           path: .artifacts
 
+      - name: Extract Parameters File Path
+        id: params-path
+        shell: bash
+        run: |
+          PARAMS_FILE="${{ inputs.parameters-file }}"
+          PARAMS_PATH=$(dirname "$PARAMS_FILE")
+          echo "path=${PARAMS_PATH}" >> $GITHUB_OUTPUT
+          echo "✅ Parameters file path: ${PARAMS_PATH}"
+
       - name: Check Artifact Download
         shell: bash
         run: |
@@ -158,15 +172,6 @@ jobs:
             echo "ℹ️  Skipping CI suffix generation (environment: ${{ inputs.environment }})"
           fi
 
-      - name: Extract Parameters File Path
-        id: params-path
-        shell: bash
-        run: |
-          PARAMS_FILE="${{ inputs.parameters-file }}"
-          PARAMS_PATH=$(dirname "$PARAMS_FILE")
-          echo "path=${PARAMS_PATH}" >> $GITHUB_OUTPUT
-          echo "✅ Parameters file path: ${PARAMS_PATH}"
-
       - name: Prepare Stack Name
         id: prepare-stack-name
         shell: bash
@@ -186,14 +191,6 @@ jobs:
           echo "stack-name=${FINAL_STACK_NAME}" >> $GITHUB_OUTPUT
           echo "✅ Final stack name: ${FINAL_STACK_NAME}"
 
-  validate:
-    name: Validate CloudFormation Template
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    permissions:
-      id-token: write
-      contents: read
-    steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
@@ -269,7 +266,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     needs:
-      - environment-check
+      - validate
       - upload-to-s3
     permissions:
       id-token: write
@@ -290,9 +287,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          CI_SUFFIX="${{ needs.environment-check.outputs.ci-suffix }}"
+          CI_SUFFIX="${{ needs.validate.outputs.ci-suffix }}"
           PARAMS_FILE="${{ inputs.parameters-file }}"
-          PARAMS_PATH="${{ needs.environment-check.outputs.parameters-file-path }}"
+          PARAMS_PATH="${{ needs.validate.outputs.parameters-file-path }}"
 
           echo "📋 Preparing CloudFormation parameters..."
 
@@ -336,7 +333,7 @@ jobs:
       - name: Display Input Parameters Summary
         shell: bash
         run: |
-          PARAMS_PATH="${{ needs.environment-check.outputs.parameters-file-path }}"
+          PARAMS_PATH="${{ needs.validate.outputs.parameters-file-path }}"
           PARAMS_FILE="${{ steps.prepare-params.outputs.parameters_file }}"
           {
             echo "## 🚀 CloudFormation Deployment Parameters"
@@ -357,8 +354,8 @@ jobs:
             echo "### Computed Values"
             echo "| Parameter | Value |"
             echo "|-----------|-------|"
-            echo "| CI Suffix | ${{ needs.environment-check.outputs.ci-suffix != '' && needs.environment-check.outputs.ci-suffix || 'N/A (not in CI)' }} |"
-            echo "| Final Stack Name | ${{ needs.environment-check.outputs.stack-name }} |"
+            echo "| CI Suffix | ${{ needs.validate.outputs.ci-suffix != '' && needs.validate.outputs.ci-suffix || 'N/A (not in CI)' }} |"
+            echo "| Final Stack Name | ${{ needs.validate.outputs.stack-name }} |"
             echo "| Template URL | ${{ needs.upload-to-s3.outputs.template_url }} |"
             echo "| Parameters File | ${PARAMS_FILE} |"
             echo ""
@@ -380,7 +377,7 @@ jobs:
         if: inputs.environment == 'ci'
         shell: bash
         run: |
-          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          STACK_NAME="${{ needs.validate.outputs.stack-name }}"
           REGION="${{ inputs.aws-region }}"
 
           echo "🗑️  Checking if stack exists: $STACK_NAME"
@@ -400,7 +397,7 @@ jobs:
         id: check-updates
         shell: bash
         run: |
-          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          STACK_NAME="${{ needs.validate.outputs.stack-name }}"
           REGION="${{ inputs.aws-region }}"
           TEMPLATE_URL="${{ needs.upload-to-s3.outputs.template_url }}"
           PARAMS_FILE="${{ steps.prepare-params.outputs.parameters_file }}"
@@ -458,7 +455,7 @@ jobs:
         continue-on-error: true
         uses: subhamay-bhattacharyya-gha/cfn-deploy-action@v1.0.0
         with:
-          stack-name: ${{ needs.environment-check.outputs.stack-name }}
+          stack-name: ${{ needs.validate.outputs.stack-name }}
           region: ${{ inputs.aws-region }}
           template-url: ${{ needs.upload-to-s3.outputs.template_url }}
           parameters-file: ${{ steps.prepare-params.outputs.parameters_file }}
@@ -469,7 +466,7 @@ jobs:
         shell: bash
         run: |
           DEPLOY_STATUS="${{ steps.deploy.outcome }}"
-          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          STACK_NAME="${{ needs.validate.outputs.stack-name }}"
           REGION="${{ inputs.aws-region }}"
 
           if [[ "$DEPLOY_STATUS" == "success" ]]; then
