@@ -79,6 +79,7 @@ jobs:
     outputs:
       ci-suffix: ${{ steps.ci-suffix.outputs.suffix }}
       stack-name: ${{ steps.prepare-stack-name.outputs.stack-name }}
+      parameters-file-path: ${{ steps.params-path.outputs.path }}
     steps:
       - name: Validate Environment
         id: validate-env
