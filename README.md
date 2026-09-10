@@ -12,8 +12,8 @@ This reusable GitHub Actions workflow provides a complete CI/CD pipeline for dep
 - **CFN Lint** - Runs linting checks on CloudFormation templates
 - **S3 Template Upload** - Uploads templates to a designated S3 bucket
 - **CloudFormation Stack Deployment** - Deploys the stack with parameterized inputs
-- **Environment-based CI Prefix** - Automatically generates unique prefixes for CI environments
-- **Parameter Management** - Supports custom parameter files with automatic CiPrefix injection
+- **Environment-based CI Suffix** - Automatically generates unique suffixes for CI environments
+- **Parameter Management** - Supports custom parameter files with automatic CiSuffix injection
 - **AWS OIDC Authentication** - Uses OIDC for secure, keyless AWS authentication
 
 ---
@@ -68,10 +68,10 @@ jobs:
 
 ## Workflow Steps
 
-1. **Environment Check** - Validates environment input and generates CI prefix if needed
+1. **Environment Check** - Validates environment input and generates CI suffix if needed
 2. **Validate** - Checks CloudFormation template syntax and runs linting
 3. **Upload to S3** - Uploads template to S3 with proper key structure
-4. **Deploy** - Deploys the CloudFormation stack with parameters and CI prefix
+4. **Deploy** - Deploys the CloudFormation stack with parameters and CI suffix
 
 ## License
 
