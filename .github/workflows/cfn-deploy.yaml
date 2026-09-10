@@ -192,7 +192,7 @@ jobs:
           echo "✅ Final stack name: ${FINAL_STACK_NAME}"
 
       - name: Checkout code
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v7.0.1
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.1.0
@@ -240,7 +240,7 @@ jobs:
       template_url: ${{ steps.upload.outputs.template_url }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v7.0.1
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.1.0
@@ -274,7 +274,7 @@ jobs:
       actions: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v7.0.1
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.1.0
