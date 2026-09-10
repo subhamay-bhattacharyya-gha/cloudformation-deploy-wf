@@ -156,6 +156,15 @@ jobs:
             echo "ℹ️  Skipping CI suffix generation (environment: ${{ inputs.environment }})"
           fi
 
+      - name: Extract Parameters File Path
+        id: params-path
+        shell: bash
+        run: |
+          PARAMS_FILE="${{ inputs.parameters-file }}"
+          PARAMS_PATH=$(dirname "$PARAMS_FILE")
+          echo "path=${PARAMS_PATH}" >> $GITHUB_OUTPUT
+          echo "✅ Parameters file path: ${PARAMS_PATH}"
+
       - name: Prepare Stack Name
         id: prepare-stack-name
         shell: bash
