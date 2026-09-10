@@ -291,6 +291,7 @@ jobs:
           set -e
           CI_SUFFIX="${{ needs.environment-check.outputs.ci-suffix }}"
           PARAMS_FILE="${{ inputs.parameters-file }}"
+          PARAMS_PATH="${{ needs.environment-check.outputs.parameters-file-path }}"
 
           echo "📋 Preparing CloudFormation parameters..."
 
@@ -328,8 +329,8 @@ jobs:
             echo "✅ Set CiSuffix to empty string (not in CI environment)"
           fi
 
-          echo "$PARAMS" | jq . > infra/parameters-updated.json
-          echo "parameters_file=infra/parameters-updated.json" >> $GITHUB_OUTPUT
+          echo "$PARAMS" | jq . > ${PARAMS_PATH}/parameters-updated.json
+          echo "parameters_file=${PARAMS_PATH}/parameters-updated.json" >> $GITHUB_OUTPUT
 
       - name: Display Input Parameters Summary
         shell: bash
