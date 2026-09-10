@@ -73,12 +73,18 @@ env:
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
-  environment-check:
-    name: Environment Check
+  validate:
+    name: Validate CloudFormation Template
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+      actions: write
     outputs:
-      ci-prefix: ${{ steps.ci-prefix.outputs.prefix }}
+      ci-suffix: ${{ steps.ci-suffix.outputs.suffix }}
       stack-name: ${{ steps.prepare-stack-name.outputs.stack-name }}
+      parameters-file-path: ${{ steps.params-path.outputs.path }}
     steps:
       - name: Validate Environment
         id: validate-env
@@ -119,55 +125,65 @@ jobs:
           name: cfn-deploy-params
           path: .artifacts
 
+      - name: Extract Parameters File Path
+        id: params-path
+        shell: bash
+        run: |
+          PARAMS_FILE="${{ inputs.parameters-file }}"
+          PARAMS_PATH=$(dirname "$PARAMS_FILE")
+          echo "path=${PARAMS_PATH}" >> $GITHUB_OUTPUT
+          echo "✅ Parameters file path: ${PARAMS_PATH}"
+
       - name: Check Artifact Download
         shell: bash
         run: |
+          PARAMS_PATH="${{ steps.params-path.outputs.path }}"
           if [[ "${{ steps.check-artifact.outputs.artifact-exists }}" == "false" ]]; then
             echo "ℹ️  Artifact does not exist - skipping download (expected on first run)"
-          elif [[ "${{ steps.download-artifact.outcome }}" == "success" && -f ".artifacts/infra/parameters-updated.json" ]]; then
+          elif [[ "${{ steps.download-artifact.outcome }}" == "success" && -f ".artifacts/${PARAMS_PATH}/parameters-updated.json" ]]; then
             echo "✅ Successfully downloaded previous artifact"
           else
             echo "⚠️  Artifact exists but download failed"
           fi
 
-      - name: Generate CI Prefix
-        id: ci-prefix
+      - name: Generate CI Suffix
+        id: ci-suffix
         shell: bash
         run: |
           if [[ "${{ inputs.environment }}" == "ci" ]]; then
-            # Try to read existing CI_PREFIX from artifact
+            # Try to read existing CI_SUFFIX from artifact
             if [[ -f ".artifacts/cfn-params.json" ]]; then
-              CI_PREFIX=$(jq -r '.CiPrefix // empty' .artifacts/cfn-params.json 2>/dev/null)
-              if [[ -n "$CI_PREFIX" ]]; then
-                echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
-                echo "✅ Reused existing CI prefix from artifact: ${CI_PREFIX}"
+              CI_SUFFIX=$(jq -r '.CiSuffix // empty' .artifacts/cfn-params.json 2>/dev/null)
+              if [[ -n "$CI_SUFFIX" ]]; then
+                echo "suffix=${CI_SUFFIX}" >> $GITHUB_OUTPUT
+                echo "✅ Reused existing CI suffix from artifact: ${CI_SUFFIX}"
               else
-                CI_PREFIX=$(openssl rand -hex 2 | tr -d '\n')
-                echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
-                echo "✅ Generated new CI prefix: ${CI_PREFIX}"
+                CI_SUFFIX=$(openssl rand -hex 2 | tr -d '\n')
+                echo "suffix=${CI_SUFFIX}" >> $GITHUB_OUTPUT
+                echo "✅ Generated new CI suffix: ${CI_SUFFIX}"
               fi
             else
-              CI_PREFIX=$(openssl rand -hex 2 | tr -d '\n')
-              echo "prefix=${CI_PREFIX}" >> $GITHUB_OUTPUT
-              echo "✅ Generated new CI prefix: ${CI_PREFIX}"
+              CI_SUFFIX=$(openssl rand -hex 2 | tr -d '\n')
+              echo "suffix=${CI_SUFFIX}" >> $GITHUB_OUTPUT
+              echo "✅ Generated new CI suffix: ${CI_SUFFIX}"
             fi
           else
-            echo "prefix=" >> $GITHUB_OUTPUT
-            echo "ℹ️  Skipping CI prefix generation (environment: ${{ inputs.environment }})"
+            echo "suffix=" >> $GITHUB_OUTPUT
+            echo "ℹ️  Skipping CI suffix generation (environment: ${{ inputs.environment }})"
           fi
 
       - name: Prepare Stack Name
         id: prepare-stack-name
         shell: bash
         run: |
-          CI_PREFIX="${{ steps.ci-prefix.outputs.prefix }}"
+          CI_SUFFIX="${{ steps.ci-suffix.outputs.suffix }}"
           STACK_NAME="${{ inputs.stack-name }}"
           if [[ -z "$STACK_NAME" ]]; then
             STACK_NAME="${{ github.event.repository.name }}"
           fi
 
-          if [[ -n "$CI_PREFIX" ]]; then
-            FINAL_STACK_NAME="${STACK_NAME}-${CI_PREFIX}"
+          if [[ -n "$CI_SUFFIX" ]]; then
+            FINAL_STACK_NAME="${STACK_NAME}-${CI_SUFFIX}"
           else
             FINAL_STACK_NAME="${STACK_NAME}"
           fi
@@ -175,14 +191,6 @@ jobs:
           echo "stack-name=${FINAL_STACK_NAME}" >> $GITHUB_OUTPUT
           echo "✅ Final stack name: ${FINAL_STACK_NAME}"
 
-  validate:
-    name: Validate CloudFormation Template
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    permissions:
-      id-token: write
-      contents: read
-    steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
@@ -258,7 +266,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     needs:
-      - environment-check
+      - validate
       - upload-to-s3
     permissions:
       id-token: write
@@ -274,13 +282,14 @@ jobs:
           role-to-assume: arn:aws:iam::${{ inputs.aws-account-id }}:role/${{ inputs.oidc-role-name }}
           aws-region: ${{ inputs.aws-region }}
 
-      - name: Prepare CloudFormation Parameters with CiPrefix
+      - name: Prepare CloudFormation Parameters with CiSuffix
         id: prepare-params
         shell: bash
         run: |
           set -e
-          CI_PREFIX="${{ needs.environment-check.outputs.ci-prefix }}"
+          CI_SUFFIX="${{ needs.validate.outputs.ci-suffix }}"
           PARAMS_FILE="${{ inputs.parameters-file }}"
+          PARAMS_PATH="${{ needs.validate.outputs.parameters-file-path }}"
 
           echo "📋 Preparing CloudFormation parameters..."
 
@@ -305,25 +314,27 @@ jobs:
             PARAMS=$(echo "$PARAMS" | jq '[to_entries[] | {ParameterKey: .key, ParameterValue: .value}]')
           fi
 
-          # Add or update CiPrefix parameter if in CI environment
-          if [[ -n "$CI_PREFIX" ]]; then
+          # Add or update CiSuffix parameter if in CI environment
+          if [[ -n "$CI_SUFFIX" ]]; then
             PARAMS=$(echo "$PARAMS" | jq \
-              --arg key "CiPrefix" \
-              --arg value "$CI_PREFIX" \
+              --arg key "CiSuffix" \
+              --arg value "$CI_SUFFIX" \
               'map(select(.ParameterKey != $key)) + [{ParameterKey: $key, ParameterValue: $value}]')
-            echo "✅ Added CiPrefix parameter: $CI_PREFIX"
+            echo "✅ Added CiSuffix parameter: $CI_SUFFIX"
           else
             PARAMS=$(echo "$PARAMS" | jq \
-              'map(select(.ParameterKey != "CiPrefix")) + [{ParameterKey: "CiPrefix", ParameterValue: ""}]')
-            echo "✅ Set CiPrefix to empty string (not in CI environment)"
+              'map(select(.ParameterKey != "CiSuffix")) + [{ParameterKey: "CiSuffix", ParameterValue: ""}]')
+            echo "✅ Set CiSuffix to empty string (not in CI environment)"
           fi
 
-          echo "$PARAMS" | jq . > infra/parameters-updated.json
-          echo "parameters_file=infra/parameters-updated.json" >> $GITHUB_OUTPUT
+          echo "$PARAMS" | jq . > ${PARAMS_PATH}/parameters-updated.json
+          echo "parameters_file=${PARAMS_PATH}/parameters-updated.json" >> $GITHUB_OUTPUT
 
       - name: Display Input Parameters Summary
         shell: bash
         run: |
+          PARAMS_PATH="${{ needs.validate.outputs.parameters-file-path }}"
+          PARAMS_FILE="${{ steps.prepare-params.outputs.parameters_file }}"
           {
             echo "## 🚀 CloudFormation Deployment Parameters"
             echo ""
@@ -343,15 +354,15 @@ jobs:
             echo "### Computed Values"
             echo "| Parameter | Value |"
             echo "|-----------|-------|"
-            echo "| CI Prefix | ${{ needs.environment-check.outputs.ci-prefix != '' && needs.environment-check.outputs.ci-prefix || 'N/A (not in CI)' }} |"
-            echo "| Final Stack Name | ${{ needs.environment-check.outputs.stack-name }} |"
+            echo "| CI Suffix | ${{ needs.validate.outputs.ci-suffix != '' && needs.validate.outputs.ci-suffix || 'N/A (not in CI)' }} |"
+            echo "| Final Stack Name | ${{ needs.validate.outputs.stack-name }} |"
             echo "| Template URL | ${{ needs.upload-to-s3.outputs.template_url }} |"
-            echo "| Parameters File | infra/parameters-updated.json |"
+            echo "| Parameters File | ${PARAMS_FILE} |"
             echo ""
             echo "### CloudFormation Parameters"
             echo "| Parameter Name | Value |"
             echo "|---|---|"
-            cat infra/parameters-updated.json | jq -r 'to_entries[] | "| \(.key) | \(.value) |"'
+            cat "${PARAMS_FILE}" | jq -r 'to_entries[] | "| \(.key) | \(.value) |"'
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Parameters as Artifact (for failure recovery)
@@ -366,7 +377,7 @@ jobs:
         if: inputs.environment == 'ci'
         shell: bash
         run: |
-          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          STACK_NAME="${{ needs.validate.outputs.stack-name }}"
           REGION="${{ inputs.aws-region }}"
 
           echo "🗑️  Checking if stack exists: $STACK_NAME"
@@ -386,7 +397,7 @@ jobs:
         id: check-updates
         shell: bash
         run: |
-          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          STACK_NAME="${{ needs.validate.outputs.stack-name }}"
           REGION="${{ inputs.aws-region }}"
           TEMPLATE_URL="${{ needs.upload-to-s3.outputs.template_url }}"
           PARAMS_FILE="${{ steps.prepare-params.outputs.parameters_file }}"
@@ -444,7 +455,7 @@ jobs:
         continue-on-error: true
         uses: subhamay-bhattacharyya-gha/cfn-deploy-action@v1.0.0
         with:
-          stack-name: ${{ needs.environment-check.outputs.stack-name }}
+          stack-name: ${{ needs.validate.outputs.stack-name }}
           region: ${{ inputs.aws-region }}
           template-url: ${{ needs.upload-to-s3.outputs.template_url }}
           parameters-file: ${{ steps.prepare-params.outputs.parameters_file }}
@@ -455,7 +466,7 @@ jobs:
         shell: bash
         run: |
           DEPLOY_STATUS="${{ steps.deploy.outcome }}"
-          STACK_NAME="${{ needs.environment-check.outputs.stack-name }}"
+          STACK_NAME="${{ needs.validate.outputs.stack-name }}"
           REGION="${{ inputs.aws-region }}"
 
           if [[ "$DEPLOY_STATUS" == "success" ]]; then
